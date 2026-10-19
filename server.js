@@ -33,7 +33,7 @@ app.post('/vapi/webhook', async (req, res) => {
   if (message?.type !== 'end-of-call-report') {
     return res.status(200).json({ ok: true, ignored: true });
   }
-  res.status(200).json({ ok: true, received: true });
+  return res.status(200).json({ ok: true, delivered: true });
 
   try {
     const missing = requiredEnv();
