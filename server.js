@@ -46,15 +46,13 @@ app.post('/vapi/webhook', async (req, res) => {
     }
 
     const telegram = `https://api.telegram.org/bot${token}`;
-    const transcript =
-      message.artifact?.transcript || 'No transcript available';
 
 
 // Format the transcript for easy reading in Telegram
 const artifact = message.artifact || {};
 const rawTranscript = artifact.transcript || "No transcript available";
 
-const callId = message.call?.id || "Unavailable";
+const callId = message.call?.id;
 const startedAt = message.startedAt || message.call?.startedAt;
 const endedAt = message.endedAt || message.call?.endedAt;
 
@@ -78,7 +76,7 @@ const formattedTranscript = [
   "📞 CALL SUMMARY",
   "━━━━━━━━━━━━━━━━━━",
   "",
-  `🆔 Call ID: ${callId}`,
+  `🆔 Call ID: ${callId || "Unavailable"}`,
   `🕒 Started: ${formatTime(startedAt)}`,
   `🏁 Ended: ${formatTime(endedAt)}`,
   "",
@@ -127,7 +125,7 @@ for (let i = 0; i < chunks.length; i++) {
 }
 
     // 2. Download recording from Vapi
-    const callId = message.call?.id;
+    
 
     if (!callId) {
       console.log('Transcript sent; no call ID found for recording');
