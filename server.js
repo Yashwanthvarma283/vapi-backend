@@ -23,87 +23,55 @@ app.get('/', (_req, res) => res.status(200).send('Vapi → Telegram forwarder is
 app.get('/health', (_req, res) => res.json({ ok: true }));
 
 app.post('/vapi/webhook', async (req, res) => {
-  // Authenticate using the secret included in the Server URL query string.
-  if (!WEBHOOK_SECRET || req.query.key !== WEBHOOK_SECRET) {
-    return res.status(401).json({ ok: false, error: 'Unauthorized' });
-  }
-
-  // Respond quickly to Vapi. Process only completed-call reports.
-  const message = req.body?.message;
-  if (message?.type !== 'end-of-call-report') {
-    return res.status(200).json({ ok: true, ignored: true });
-  }
-  return res.status(200).json({ ok: true, delivered: true });
-
   try {
-    const missing = requiredEnv();
-    if (missing.length) throw new Error(`Missing environment variables: ${missing.join(', ')}`);
-
-    const callId = message.call?.id || message.call?.callId || message.callId;
-    const transcript = typeof message.artifact?.transcript === 'string'
-      ? message.artifact.transcript
-      : Array.isArray(message.artifact?.messages)
-        ? message.artifact.messages.map((m) => `${m.role === 'assistant' ? 'Assistant' : m.role === 'user' ? 'User' : (m.role || 'Speaker')}: ${m.message || m.content || ''}`).join('\n')
-        : '';
-
-    const title = `Vapi call completed${callId ? ` — ${callId}` : ''}`;
-    const text = `${title}\n\n${transcript || '(No transcript was included in the report.)'}`;
-    const telegramBase = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
-
-    // Telegram text messages have a 4096-character limit; send long transcripts as .txt files.
-    if (text.length <= 4000) {
-      await telegramJson(`${telegramBase}/sendMessage`, {
-        chat_id: TELEGRAM_CHAT_ID,
-        text,
-        disable_web_page_preview: true
-      });
-    } else {
-      await telegramJson(`${telegramBase}/sendMessage`, {
-        chat_id: TELEGRAM_CHAT_ID,
-        text: `${title}\nFull transcript is attached as a text file.`
-      });
-      const transcriptFile = new Blob([text], { type: 'text/plain; charset=utf-8' });
-      const form = new FormData();
-      form.append('chat_id', TELEGRAM_CHAT_ID);
-      form.append('document', transcriptFile, `vapi-transcript-${safeName(callId)}.txt`);
-      await telegramForm(`${telegramBase}/sendDocument`, form);
+    if (
+      !process.env.WEBHOOK_SECRET ||
+      req.query.key !== process.env.WEBHOOK_SECRET
+    ) {
+      return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    // Use Vapi's authenticated artifact endpoint; it follows the short-lived redirect.
-    if (callId) {
-      const audioResponse = await fetch(`https://api.vapi.ai/call/${encodeURIComponent(callId)}/mono-recording`, {
-        headers: { Authorization: `Bearer ${VAPI_PRIVATE_API_KEY}` },
-        redirect: 'follow'
-      });
-      if (!audioResponse.ok) {
-        const details = await audioResponse.text().catch(() => '');
-        throw new Error(`Vapi recording download failed (${audioResponse.status}): ${details.slice(0, 300)}`);
+    const message = req.body?.message || req.body;
+
+    if (message.type !== 'end-of-call-report') {
+      return res.status(200).json({ ignored: message.type });
+    }
+
+    const transcript =
+      message.artifact?.transcript || 'No transcript available';
+
+    const token = process.env.TELEGRAM_BOT_TOKEN;
+    const chatId = process.env.TELEGRAM_CHAT_ID;
+
+    if (!token || !chatId) {
+      throw new Error('Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID');
+    }
+
+    const response = await fetch(
+      `https://api.telegram.org/bot${token}/sendMessage`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text: `Vapi call transcript:\n\n${transcript}`.slice(0, 4000)
+        })
       }
-      const audioBlob = await audioResponse.blob();
-      const contentType = audioResponse.headers.get('content-type') || '';
-      const ext = contentType.includes('mpeg') ? 'mp3' : contentType.includes('mp4') ? 'mp4' : 'wav';
-      const form = new FormData();
-      form.append('chat_id', TELEGRAM_CHAT_ID);
-      form.append('caption', `Call recording${callId ? ` — ${callId}` : ''}`);
-      form.append('document', audioBlob, `vapi-recording-${safeName(callId)}.${ext}`);
-      await telegramForm(`${telegramBase}/sendDocument`, form);
-    } else {
-      await telegramJson(`${telegramBase}/sendMessage`, {
-        chat_id: TELEGRAM_CHAT_ID,
-        text: 'Could not attach recording: Vapi report did not include a call ID.'
-      });
+    );
+
+    const result = await response.json();
+
+    if (!response.ok || !result.ok) {
+      console.error('Telegram API error:', result);
+      throw new Error('Telegram rejected the message');
     }
+
+    console.log('Telegram delivery confirmed');
+
+    return res.status(200).json({ delivered: true });
   } catch (error) {
-    console.error('Forwarding failed:', error);
-    // Try to notify the owner; do not expose secrets.
-    try {
-      await telegramJson(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-        chat_id: TELEGRAM_CHAT_ID,
-        text: `Vapi forwarding error: ${String(error.message || error).slice(0, 800)}`
-      });
-    } catch (notifyError) {
-      console.error('Could not notify Telegram:', notifyError.message);
-    }
+    console.error('Webhook delivery failed:', error);
+    return res.status(500).json({ delivered: false });
   }
 });
 
