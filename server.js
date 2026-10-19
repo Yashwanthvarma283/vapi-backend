@@ -49,23 +49,82 @@ app.post('/vapi/webhook', async (req, res) => {
     const transcript =
       message.artifact?.transcript || 'No transcript available';
 
-    // 1. Send transcript
-    for (let i = 0; i < transcript.length; i += 3500) {
-      const textResponse = await fetch(`${telegram}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chat_id: chatId,
-          text: `Call transcript:\n\n${transcript.slice(i, i + 3500)}`
-        })
+
+// Format the transcript for easy reading in Telegram
+const artifact = message.artifact || {};
+const rawTranscript = artifact.transcript || "No transcript available";
+
+const callId = message.call?.id || "Unavailable";
+const startedAt = message.startedAt || message.call?.startedAt;
+const endedAt = message.endedAt || message.call?.endedAt;
+
+const formatTime = (value) => {
+  if (!value) return "Unavailable";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? "Unavailable"
+    : date.toLocaleString("en-IN", {
+        timeZone: "Asia/Kolkata",
+        day: "2-digit",
+        month: "short",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: true
       });
+};
 
-      const textResult = await textResponse.json();
+const formattedTranscript = [
+  "📞 CALL SUMMARY",
+  "━━━━━━━━━━━━━━━━━━",
+  "",
+  `🆔 Call ID: ${callId}`,
+  `🕒 Started: ${formatTime(startedAt)}`,
+  `🏁 Ended: ${formatTime(endedAt)}`,
+  "",
+  "📝 CONVERSATION TRANSCRIPT",
+  "━━━━━━━━━━━━━━━━━━",
+  "",
+  rawTranscript.trim()
+].join("\n");
 
-      if (!textResponse.ok || !textResult.ok) {
-        throw new Error(`Telegram text error: ${JSON.stringify(textResult)}`);
-      }
+// Telegram message limit: split long transcripts safely
+const chunks = [];
+const maxLength = 3500;
+let remaining = formattedTranscript;
+
+while (remaining.length > maxLength) {
+  let splitAt = remaining.lastIndexOf("\n", maxLength);
+  if (splitAt < 1000) splitAt = maxLength;
+
+  chunks.push(remaining.slice(0, splitAt));
+  remaining = remaining.slice(splitAt).trimStart();
+}
+
+if (remaining.length) chunks.push(remaining);
+
+for (let i = 0; i < chunks.length; i++) {
+  const response = await fetch(
+    `https://api.telegram.org/bot${token}/sendMessage`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text:
+          chunks.length > 1
+            ? `${i === 0 ? "" : "📝 TRANSCRIPT (continued)\n\n"}${chunks[i]}`
+            : chunks[i]
+      })
     }
+  );
+
+  const result = await response.json();
+
+  if (!response.ok || !result.ok) {
+    throw new Error(`Telegram message failed: ${JSON.stringify(result)}`);
+  }
+}
 
     // 2. Download recording from Vapi
     const callId = message.call?.id;
