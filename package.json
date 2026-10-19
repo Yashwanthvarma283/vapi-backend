@@ -1,8 +1,9 @@
+
 {
-  "name": "vapi-telegram-vercel",
-  "version": "1.0.0",
-  "private": true,
-  "engines": {
-    "node": ">=18"
+  "version": 2,
+  "functions": {
+    "api/vapi.js": {
+      "runtime": "@vercel/node"
+    }
   }
 }
