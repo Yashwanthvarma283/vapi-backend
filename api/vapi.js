@@ -46,42 +46,85 @@ async function downloadRecording(callId, vapiKey) {
   return Buffer.from(bytes);
 }
 
-module.exports = async function handler(req, res) {
-  if (req.method === "GET") return respond(res, 200, { ok: true, service: "vapi-telegram-webhook" });
-  if (req.method !== "POST") {
-    res.setHeader("Allow", "GET, POST");
-    return respond(res, 405, { ok: false, error: "Method not allowed" });
+
+module.exports = async (req, res) => {
+  if (req.method === "GET") {
+    return res.status(200).json({ ok: true, service: "vapi-telegram-webhook" });
   }
 
-  const expected = process.env.WEBHOOK_SECRET;
-  if (!expected || str(req.query && req.query.key) !== expected)
-    return respond(res, 401, { ok: false, error: "Invalid webhook secret" });
+  if (req.method !== "POST") {
+    return res.status(405).send("Method not allowed");
+  }
 
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  const chatId = process.env.TELEGRAM_CHAT_ID;
-  const vapiKey = process.env.VAPI_PRIVATE_API_KEY;
-  if (!token || !chatId || !vapiKey)
-    return respond(res, 500, { ok: false, error: "Missing required environment variables" });
-
-  const message = req.body && req.body.message && typeof req.body.message === "object" ? req.body.message : (req.body || {});
-  if (message.type !== "end-of-call-report")
-    return respond(res, 200, { ok: true, ignored: true, type: message.type || "unknown" });
+  if (req.query.key !== process.env.WEBHOOK_SECRET) {
+    return res.status(401).send("Unauthorized");
+  }
 
   try {
-    const call = message.call || {};
-    const artifact = message.artifact || call.artifact || {};
-    const callId = str(call.id);
-    const transcript = str(artifact.transcript || message.transcript || call.transcript);
-    const summary = str((message.analysis && message.analysis.summary) || (call.analysis && call.analysis.summary));
-    const heading = `Vapi call completed\nCall ID: ${callId || "not provided"}\nEnded: ${str(message.endedReason || "unknown")}${summary ? `\nSummary: ${summary}` : ""}\n\n`;
-    await sendTelegramText(token, chatId, heading + (transcript || "No transcript was included in the end-of-call report."));
+    const payload = req.body;
+    const message = payload.message || payload;
 
-    if (!callId) return respond(res, 200, { ok: true, transcriptSent: true, recordingSent: false, warning: "No call.id; recording skipped." });
-    const recording = await downloadRecording(callId, vapiKey);
-    await sendTelegramRecording(token, chatId, recording, `vapi-call-${callId}.wav`);
-    return respond(res, 200, { ok: true, transcriptSent: true, recordingSent: true, callId });
-  } catch (e) {
-    console.error("Vapi -> Telegram delivery failed:", e && e.message ? e.message : e);
-    return respond(res, 502, { ok: false, error: e && e.message ? e.message : "Delivery failed" });
+    if (message.type !== "end-of-call-report") {
+      return res.status(200).send("Ignored");
+    }
+
+    const transcript =
+      message.artifact?.transcript || "No transcript available";
+    const callId = message.call?.id;
+
+    const botToken = process.env.TELEGRAM_BOT_TOKEN;
+    const chatId = process.env.TELEGRAM_CHAT_ID;
+
+    const telegramUrl = `https://api.telegram.org/bot${botToken}/sendMessage`;
+
+    for (let i = 0; i < transcript.length; i += 3500) {
+      const response = await fetch(telegramUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text: transcript.slice(i, i + 3500),
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Telegram failed: ${await response.text()}`);
+      }
+    }
+
+    if (callId && process.env.VAPI_PRIVATE_API_KEY) {
+      const recordingResponse = await fetch(
+        `https://api.vapi.ai/call/${callId}/mono-recording`,
+        {
+          headers: {
+            Authorization: `Bearer ${process.env.VAPI_PRIVATE_API_KEY}`,
+          },
+        }
+      );
+
+      if (recordingResponse.ok) {
+        const audio = await recordingResponse.arrayBuffer();
+        const form = new FormData();
+        form.append(
+          "chat_id",
+          chatId
+        );
+        form.append(
+          "document",
+          new Blob([audio], { type: "audio/wav" }),
+          "call-recording.wav"
+        );
+
+        await fetch(
+          `https://api.telegram.org/bot${botToken}/sendDocument`,
+          { method: "POST", body: form }
+        );
+      }
+    }
+
+    return res.status(200).send("Delivered");
+  } catch (error) {
+    console.error(error);
+    return res.status(500).send("Delivery failed");
   }
 };
