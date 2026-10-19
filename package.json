@@ -1,16 +1,17 @@
+```json
 {
-  "name": "vapi-telegram-vercel",
-  "version": "1.0.0",
-  "private": true,
-  "type": "module",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "dependencies": {
-    "express": "^4.21.2"
-  },
-  "engines": {
-    "node": ">=20"
-  }
+  "version": 2,
+  "builds": [
+    {
+      "src": "server.js",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "/server.js"
+    }
+  ]
 }
+```
